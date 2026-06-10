@@ -1,12 +1,15 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from jupyter_client import KernelManager
 import asyncio
 import json
+import os
 import queue
 import logging
+import secrets
 import threading
 import time
 from typing import Callable, List, Dict, Any, Optional
@@ -15,6 +18,17 @@ import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+RE_EIN_PASSWORD = os.environ.get("RE_EIN_PASSWORD")
+if not RE_EIN_PASSWORD:
+    raise RuntimeError("RE_EIN_PASSWORD environment variable must be set")
+
+bearer_scheme = HTTPBearer()
+
+
+def verify_auth(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
+    if not secrets.compare_digest(credentials.credentials, RE_EIN_PASSWORD):
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 km: KernelManager = None
 kc = None
@@ -126,23 +140,23 @@ def execute_code(code: str, timeout: float) -> List[Dict[str, Any]]:
 async def lifespan(app: FastAPI):
     global km, kc
 
-    logger.info("Starting Jupyter kernel...")
-    km = KernelManager()
+    logger.info("starting jupyter kernel...")
+    km = KernelManager(transport='ipc')
     km.start_kernel()
     kc = km.client()
     kc.start_channels()
     kc.wait_for_ready(timeout=10)
-    logger.info("Kernel started successfully")
+    logger.info("kernel started successfully")
 
     yield
 
-    logger.info("Shutting down kernel...")
+    logger.info("shutting down kernel...")
     kc.stop_channels()
     km.shutdown_kernel()
-    logger.info("Kernel shut down")
+    logger.info("kernel shut down")
 
 
-app = FastAPI(title="Jupyter Kernel API", lifespan=lifespan)
+app = FastAPI(title="re-ein", lifespan=lifespan, dependencies=[Depends(verify_auth)])
 
 
 @app.get("/")
@@ -217,7 +231,7 @@ async def restart_kernel():
     with execute_lock:
         kc.stop_channels()
         km.shutdown_kernel()
-        km = KernelManager()
+        km = KernelManager(transport='ipc')
         km.start_kernel()
         kc = km.client()
         kc.start_channels()
@@ -249,4 +263,4 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="localhost", port=8000)

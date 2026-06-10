@@ -13,6 +13,18 @@
   :type 'string
   :group 're-ein)
 
+(defcustom re-ein-password (getenv "RE_EIN_PASSWORD")
+  "Shared secret"
+  :type '(choice (const :tag "None" nil) string)
+  :group 're-ein)
+
+(defun re-ein--auth-header ()
+  "Return the Authorization header as a (NAME . VALUE) cons.
+Signal a `user-error' if `re-ein-password' is unset."
+  (unless (and re-ein-password (not (string-empty-p re-ein-password)))
+    (user-error "re-ein: set `re-ein-password' (or the RE_EIN_PASSWORD env var)"))
+  (cons "Authorization" (concat "Bearer " re-ein-password)))
+
 (defcustom re-ein-timeout 86400.0
   "Default timeout for code execution in seconds (24 hours)."
   :type 'number
@@ -191,6 +203,8 @@ while the code is running; nil for code typed at the prompt."
            :command (list "curl" "--no-buffer" "-sS" "-N"
                           "-X" "POST"
                           "-H" "Content-Type: application/json"
+                          "-H" (let ((h (re-ein--auth-header)))
+                                 (concat (car h) ": " (cdr h)))
                           "--data-binary" "@-"
                           (concat re-ein-server-url "/execute/stream"))
            :connection-type 'pipe
@@ -205,7 +219,9 @@ while the code is running; nil for code typed at the prompt."
   "Interrupt the currently running kernel execution (server-side SIGINT)."
   (interactive)
   (let ((url-request-method "POST")
-        (url-request-extra-headers '(("Content-Type" . "application/json"))))
+        (url-request-extra-headers
+         (list '("Content-Type" . "application/json")
+               (re-ein--auth-header))))
     (url-retrieve (concat re-ein-server-url "/kernel/interrupt")
                   (lambda (_status) (message "re-ein: interrupt sent")))))
 
@@ -458,11 +474,12 @@ while the code is running; nil for code typed at the prompt."
 (defun re-ein-kernel-status ()
   "Check the kernel status."
   (interactive)
-  (let ((url-request-method "GET")
-        (response-buffer
-         (url-retrieve-synchronously
-          (concat re-ein-server-url "/kernel/status")
-          nil nil 5)))
+  (let* ((url-request-method "GET")
+         (url-request-extra-headers (list (re-ein--auth-header)))
+         (response-buffer
+          (url-retrieve-synchronously
+           (concat re-ein-server-url "/kernel/status")
+           nil nil 5)))
     (if response-buffer
         (with-current-buffer response-buffer
           (goto-char (point-min))
@@ -480,7 +497,8 @@ while the code is running; nil for code typed at the prompt."
   (when (yes-or-no-p "Restart Jupyter kernel? This will clear all variables. ")
     (let* ((url-request-method "POST")
            (url-request-extra-headers
-            '(("Content-Type" . "application/json")))
+            (list '("Content-Type" . "application/json")
+                  (re-ein--auth-header)))
            (response-buffer
             (url-retrieve-synchronously
              (concat re-ein-server-url "/kernel/restart")
